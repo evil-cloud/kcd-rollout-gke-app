@@ -1,11 +1,11 @@
-// Pipeline version: v1.1.6
+// Pipeline version: v1.1.9
 pipeline {
     agent { label 'jenkins-jenkins-agent' }
     environment {
-        IMAGE_NAME      = "d4rkghost47/gitops-api-gke"
+        IMAGE_NAME      = "d4rkghost47/gitops-api-gke-sec"
         REGISTRY        = "https://index.docker.io/v1/"
         SHORT_SHA       = "${GIT_COMMIT[0..7]}"
-        SONAR_PROJECT   = "gitops-api"
+        SONAR_PROJECT   = "gitops-api-gke-sec"
         SONAR_SOURCE    = "src"
         SONAR_HOST      = "http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000"
         TRIVY_HOST      = "http://trivy.trivy-system.svc.cluster.local:4954"
@@ -16,9 +16,38 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    logInfo("CHECKOUT", "Starting code checkout...")
-                    checkout scm
-                    logSuccess("CHECKOUT", "Code checkout completed.")
+                    checkout([$class: 'GitSCM', branches: [[name: '*/main']],
+                            extensions: [[$class: 'CleanBeforeCheckout']],
+                            userRemoteConfigs: [[url: 'https://github.com/evil-cloud/kcd-rollout-app.git']]])
+                }
+            }
+        }
+
+        stage('Test and Analysis') {
+            parallel {
+                stage('Static Code Analysis') {
+                    steps {
+                        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                            sh '''
+                            sonar-scanner \\
+                                -Dsonar.projectKey=${SONAR_PROJECT} \\
+                                -Dsonar.sources=${SONAR_SOURCE} \\
+                                -Dsonar.host.url=${SONAR_HOST} \\
+                                -Dsonar.login=$SONAR_TOKEN
+                            '''
+                        }
+                    }
+                }
+
+                stage('Unit Tests') {
+                    steps {
+                        container('dind') {
+                            sh '''
+                            docker build -t ${IMAGE_NAME}-test -f docker/Dockerfile.test.pipeline .
+                            docker run --rm ${IMAGE_NAME}-test
+                            '''
+                        }
+                    }
                 }
             }
         }
@@ -26,72 +55,33 @@ pipeline {
         stage('Build Image') {
             steps {
                 container('dind') {
-                    script {
-                        logInfo("BUILD", "Building Docker image...")
-                        try {
-                            sh '''
-                            docker build --no-cache -t ${IMAGE_NAME}:${SHORT_SHA} .
-                            docker tag ${IMAGE_NAME}:${SHORT_SHA} ${IMAGE_NAME}:latest
-                            '''
-                            logSuccess("BUILD", "Build completed.")
-                        } catch (Exception e) {
-                            logFailure("BUILD", "Docker build failed: ${e.message}")
-                            error("Stopping pipeline due to build failure.")
-                        }
-                    }
+                    sh '''
+                    export DOCKER_BUILDKIT=1
+                    docker build -f docker/Dockerfile.pipeline -t ${IMAGE_NAME}:${SHORT_SHA} .
+                    '''
                 }
             }
         }
-    
 
         stage('Push Image') {
             steps {
                 container('dind') {
-                    script {
-                        withCredentials([string(credentialsId: 'docker-token', variable: 'DOCKER_TOKEN')]) {
-                            logInfo("PUSH", "Uploading Docker image...")
-                            try {
-                                sh '''
-                                echo "$DOCKER_TOKEN" | docker login -u "d4rkghost47" --password-stdin > /dev/null 2>&1
-                                docker push ${IMAGE_NAME}:${SHORT_SHA}
-                                docker push ${IMAGE_NAME}:latest
-                                '''
-                                logSuccess("PUSH", "Image pushed successfully.")
-                            } catch (Exception e) {
-                                logFailure("PUSH", "Docker push failed: ${e.message}")
-                                error("Stopping pipeline due to push failure.")
-                            }
-                        }
+                    withCredentials([string(credentialsId: 'docker-token', variable: 'DOCKER_TOKEN')]) {
+                        sh '''
+                        echo "$DOCKER_TOKEN" | docker login -u "d4rkghost47" --password-stdin > /dev/null 2>&1
+                        docker push ${IMAGE_NAME}:${SHORT_SHA}
+                        '''
                     }
                 }
             }
         }
 
-    }
-
-    post {
-        success {
-            logSuccess("PIPELINE", "Pipeline completed successfully.")
-        }
-        failure {
-            logFailure("PIPELINE", "Pipeline failed.")
+        stage('Scan Image') {
+            steps {
+                sh '''
+                trivy image --server ${TRIVY_HOST} ${IMAGE_NAME}:${SHORT_SHA} --severity HIGH,CRITICAL --quiet
+                '''
+            }
         }
     }
 }
-
-def logInfo(stage, message) {
-    echo "[${stage}] [INFO] ${getTimestamp()} - ${message}"
-}
-
-def logSuccess(stage, message) {
-    echo "[${stage}] [SUCCESS] ${getTimestamp()} - ${message}"
-}
-
-def logFailure(stage, message) {
-    echo "[${stage}] [FAILURE] ${getTimestamp()} - ${message}"
-}
-
-def getTimestamp() {
-    return sh(script: "TZ='America/Guatemala' date '+%Y-%m-%d %H:%M:%S'", returnStdout: true).trim()
-}
-
