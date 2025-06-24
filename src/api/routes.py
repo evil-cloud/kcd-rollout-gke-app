@@ -19,7 +19,7 @@ async def get_version():
 
 @router.get("/api/v1/rollout/strategy", response_model=MessageResponse)
 async def hello():
-    return {"message": f"Version: {settings.ROLLOUT_STRATEGY} utilizando Argo Rollouts!"}
+    return {"message": f"Version: {settings.ROLLOUT_STRATEGY}, hola desde Anthos Service mesh!"}
 
 
 @router.get("/api/v1/rollout/external")
