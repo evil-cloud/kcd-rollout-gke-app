@@ -18,7 +18,7 @@ pipeline {
                 script {
                     checkout([$class: 'GitSCM', branches: [[name: '*/main']],
                             extensions: [[$class: 'CleanBeforeCheckout']],
-                            userRemoteConfigs: [[url: 'https://github.com/evil-cloud/kcd-rollout-app.git']]])
+                            userRemoteConfigs: [[url: 'https://github.com/evil-cloud/kcd-rollout-gke-app.git']]])
                 }
             }
         }
